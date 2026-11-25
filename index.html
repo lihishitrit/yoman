@@ -208,6 +208,11 @@ input::-webkit-date-and-time-value{text-align:right}
 .icons{display:grid;grid-template-columns:repeat(8,minmax(0,1fr));gap:6px}
 .icons button{height:40px;border-radius:10px;border:1px solid #EAE2D1;display:flex;align-items:center;justify-content:center;background:var(--paper)}
 .icons button.on{border:1.5px solid var(--c);background:var(--cb)}
+.repi{display:inline-block;width:.85em;height:.85em;vertical-align:-.08em;margin-inline-start:4px}
+.tsel{display:flex;align-items:center;gap:4px;direction:ltr}
+.tsel select{flex:1;text-align:center;text-align-last:center;padding:0 6px;font-variant-numeric:tabular-nums}
+.tsel span{font-weight:700;color:var(--muted)}
+.hint{font-size:12px;line-height:17px;color:var(--muted);margin-top:2px}
 #toast{position:fixed;bottom:calc(env(safe-area-inset-bottom) + 86px);left:50%;transform:translate(-50%,20px);background:var(--ink);color:#fff;border-radius:12px;padding:10px 16px;font-size:14px;display:flex;gap:16px;align-items:center;opacity:0;pointer-events:none;transition:opacity .2s,transform .2s;z-index:60;max-width:90%;white-space:nowrap}
 #toast.show{opacity:1;transform:translate(-50%,0);pointer-events:auto}
 #toast button{color:var(--accent);font-weight:700}
@@ -302,6 +307,8 @@ const BELL = svg('<path d="M6 8a6 6 0 0 1 12 0c0 7 3 8 3 8H3s3-1 3-8M10.3 20a1.9
 const dshort = (s) => { const d = parse(s); return DS[d.getDay()] + ' \u2066' + d.getDate() + '/' + (d.getMonth() + 1) + '\u2069'; };
 const dateLabel = (s) => { if (!s) return 'ללא תאריך'; const t = today(); if (s === t) return 'היום'; if (s === addDays(t, 1)) return 'מחר'; if (s === addDays(t, -1)) return 'אתמול'; return dshort(s); };
 const LRI = '\u2066', PDI = '\u2069';
+const REPI = '<svg class="repi" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="חוזר"><path d="M20 12a8 8 0 1 1-2.6-5.9M20 4v5h-5"/></svg>';
+const ttl = (it) => esc(it.title) + (it.rep ? REPI : '');
 const rangeLabel = (it) => it.start ? LRI + (it.end ? it.start + '–' + it.end : it.start) + PDI : '';
 
 /* ---------- data ---------- */
@@ -346,7 +353,45 @@ function sortKey(it) {
   return [it.type === 'event' ? 0 : 1, s == null ? (it.type === 'event' ? -1 : 9999) : s];
 }
 function sortItems(a, b) { const x = sortKey(a), y = sortKey(b); return x[0] - y[0] || x[1] - y[1] || a.title.localeCompare(b.title, 'he'); }
-const itemsOn = (d) => DB.items.filter((i) => i.date === d && visible(i)).sort(sortItems);
+const dimOf = (y, m) => new Date(y, m + 1, 0).getDate();
+function occursOn(it, ds) {
+  if (!it.rep) return it.date === ds;
+  if (!it.date || ds < it.date) return false;
+  if (it.until && ds > it.until) return false;
+  if (it.ex && it.ex.includes(ds)) return false;
+  const d = parse(ds), b = parse(it.date);
+  if (it.rep === 'day') return true;
+  if (it.rep === 'week') return d.getDay() === b.getDay();
+  if (it.rep === 'month') return d.getDate() === Math.min(b.getDate(), dimOf(d.getFullYear(), d.getMonth()));
+  if (it.rep === 'year') return d.getMonth() === b.getMonth() && d.getDate() === Math.min(b.getDate(), dimOf(d.getFullYear(), d.getMonth()));
+  return false;
+}
+const splitId = (s) => { s = String(s); const i = s.indexOf('@'); return i < 0 ? [s, null] : [s.slice(0, i), s.slice(i + 1)]; };
+const occ = (it, d) => Object.assign({}, it, { id: it.id + '@' + d, date: d, done: (it.doneDates || []).includes(d), _occ: d });
+const findItem = (s) => DB.items.find((i) => i.id === splitId(s)[0]);
+const itemsOn = (d) => DB.items.filter((i) => visible(i) && occursOn(i, d)).map((i) => (i.rep ? occ(i, d) : i)).sort(sortItems);
+function nextOcc(it, from) {
+  let d = it.date > from ? it.date : from;
+  for (let k = 0; k < 800; k++) {
+    if (it.until && d > it.until) return null;
+    if (occursOn(it, d) && !(it.doneDates || []).includes(d)) return d;
+    d = addDays(d, 1);
+  }
+  return null;
+}
+const sig = (o) => JSON.stringify([o.date, o.start, o.end, o.rem, o.title, o.rep || null, o.until || null]);
+const REPS = [[null, 'ללא'], ['day', 'כל יום'], ['week', 'כל שבוע'], ['month', 'כל חודש'], ['year', 'כל שנה']];
+function repSummary(f) {
+  if (!f.rep || !f.date) return '';
+  const d = parse(f.date);
+  const s = { day: 'כל יום', week: 'כל יום ' + DAYS[d.getDay()], month: 'כל חודש ב־' + d.getDate() + (d.getDate() > 28 ? ' (בחודש קצר: ביום האחרון)' : ''), year: 'כל שנה ב־' + d.getDate() + ' ב' + MONTHS[d.getMonth()] }[f.rep];
+  return s + (f.until ? ', עד ' + dshort(f.until) + ' (כולל)' : ', ללא תאריך סיום');
+}
+function removeWithUndo(fn, msg) {
+  const snap = JSON.stringify(DB.items);
+  fn(); save(); render();
+  toast(msg, 'ביטול', () => { DB.items = JSON.parse(snap); save(); render(); });
+}
 
 /* ---------- shared pieces ---------- */
 function navBtns() {
@@ -390,8 +435,8 @@ function renderMonth(V) {
         show.map((it) => {
           const p = pal(cat(it.cat));
           return it.type === 'event'
-            ? '<span class="mev" style="background:' + p[1] + ';color:' + p[0] + '">' + esc(it.title) + '</span>'
-            : '<span class="mtk' + (it.done ? ' done' : '') + '"><i style="border-color:' + p[0] + (it.done ? ';background:' + p[0] : '') + '"></i><span>' + esc(it.title) + '</span></span>';
+            ? '<span class="mev" style="background:' + p[1] + ';color:' + p[0] + '">' + ttl(it) + '</span>'
+            : '<span class="mtk' + (it.done ? ' done' : '') + '"><i style="border-color:' + p[0] + (it.done ? ';background:' + p[0] : '') + '"></i><span>' + ttl(it) + '</span></span>';
         }).join('') + (more ? '<span class="more">' + LRI + '+' + more + PDI + '</span>' : '') + '</button>';
     }
     $('#mgrid').innerHTML = h;
@@ -413,9 +458,9 @@ function renderWeek(V) {
     const ds = addDays(s, i), dd = parse(ds), its = itemsOn(ds);
     const ev = its.filter((x) => x.type === 'event'), tk = its.filter((x) => x.type === 'task');
     cols += '<section class="wday' + (ds === T ? ' today' : '') + '"><button class="wday-h" data-action="open-day" data-date="' + ds + '"><span>' + DS[i] + '</span><b>' + dd.getDate() + '</b></button><div class="wday-b">' +
-      ev.map((it) => { const p = pal(cat(it.cat)); return '<button class="wev" data-action="edit" data-id="' + it.id + '" style="background:' + p[1] + ';color:' + p[0] + '"><small>' + (it.start || 'כל היום') + '</small><span>' + esc(it.title) + '</span></button>'; }).join('') +
+      ev.map((it) => { const p = pal(cat(it.cat)); return '<button class="wev" data-action="edit" data-id="' + it.id + '" style="background:' + p[1] + ';color:' + p[0] + '"><small>' + (it.start || 'כל היום') + '</small><span>' + ttl(it) + '</span></button>'; }).join('') +
       (ev.length && tk.length ? '<div class="sep"></div>' : '') +
-      tk.map((it) => { const p = pal(cat(it.cat)); return '<div class="wtk' + (it.done ? ' done' : '') + '">' + cbox(it, true) + '<button class="wtk-t" data-action="edit" data-id="' + it.id + '"><span>' + esc(it.title) + '</span>' + (it.start ? '<small style="color:' + p[0] + '">' + rangeLabel(it) + '</small>' : '') + '</button></div>'; }).join('') +
+      tk.map((it) => { const p = pal(cat(it.cat)); return '<div class="wtk' + (it.done ? ' done' : '') + '">' + cbox(it, true) + '<button class="wtk-t" data-action="edit" data-id="' + it.id + '"><span>' + ttl(it) + '</span>' + (it.start ? '<small style="color:' + p[0] + '">' + rangeLabel(it) + '</small>' : '') + '</button></div>'; }).join('') +
       (its.length ? '' : '<span class="empty">—</span>') + '</div></section>';
   }
   V.innerHTML = '<header class="hdr whdr"><div class="wtitle"><h1>' + title + '</h1><span class="sub">' + b.getFullYear() + '</span></div><div class="wctl">' + viewSeg('week') + '<div class="hdr-actions">' + navBtns() + '</div></div></header>' +
@@ -442,16 +487,16 @@ function renderDay(V) {
   let hours = '';
   for (let h = 0; h <= 24; h++) hours += '<div class="hr" style="top:' + h * HOUR_PX + 'px"><span>' + (h < 24 ? pad(h) + ':00' : '') + '</span><i></i></div>';
   const evs = layoutCols(timed.map((it) => { const s = tmin(it.start); const e = it.end ? Math.max(tmin(it.end), s + 15) : s + 60; return { it, s, e }; }));
-  const evHtml = evs.map((x) => { const p = pal(cat(x.it.cat)); const h = Math.max(22, (x.e - x.s) / 60 * HOUR_PX - 2); return '<button class="ev" data-action="edit" data-id="' + x.it.id + '" style="top:' + (x.s / 60 * HOUR_PX + 1) + 'px;height:' + h + 'px;right:calc(' + (x.col / x.n * 100) + '% );width:calc(' + (100 / x.n) + '% - 3px);background:' + p[1] + ';color:' + p[0] + '"><b>' + esc(x.it.title) + '</b>' + (h >= 34 ? '<small>' + rangeLabel(x.it) + '</small>' : '') + '</button>'; }).join('');
+  const evHtml = evs.map((x) => { const p = pal(cat(x.it.cat)); const h = Math.max(22, (x.e - x.s) / 60 * HOUR_PX - 2); return '<button class="ev" data-action="edit" data-id="' + x.it.id + '" style="top:' + (x.s / 60 * HOUR_PX + 1) + 'px;height:' + h + 'px;right:calc(' + (x.col / x.n * 100) + '% );width:calc(' + (100 / x.n) + '% - 3px);background:' + p[1] + ';color:' + p[0] + '"><b>' + ttl(x.it) + '</b>' + (h >= 34 ? '<small>' + rangeLabel(x.it) + '</small>' : '') + '</button>'; }).join('');
   const rts = layoutCols(ranged.map((it) => { const s = tmin(it.start); const e = it.end ? Math.max(tmin(it.end), s + 15) : s + 60; return { it, s, e }; }));
-  const rtHtml = rts.map((x) => { const p = pal(cat(x.it.cat)); const h = Math.max(26, (x.e - x.s) / 60 * HOUR_PX - 2); return '<div class="rt' + (x.it.done ? ' done' : '') + '" data-action="edit" data-id="' + x.it.id + '" style="--c:' + p[0] + ';top:' + (x.s / 60 * HOUR_PX + 1) + 'px;height:' + h + 'px;' + (x.n > 1 ? 'right:' + (x.col / x.n * 100) + '%;left:auto;width:calc(' + 100 / x.n + '% - 3px)' : '') + '"><div class="rt-top">' + cbox(x.it, true) + '<button data-action="edit" data-id="' + x.it.id + '" style="min-width:0;overflow:hidden;display:flex"><span>' + esc(x.it.title) + '</span></button></div>' + (h >= 40 ? '<small>' + rangeLabel(x.it) + '</small>' : '') + '</div>'; }).join('');
+  const rtHtml = rts.map((x) => { const p = pal(cat(x.it.cat)); const h = Math.max(26, (x.e - x.s) / 60 * HOUR_PX - 2); return '<div class="rt' + (x.it.done ? ' done' : '') + '" data-action="edit" data-id="' + x.it.id + '" style="--c:' + p[0] + ';top:' + (x.s / 60 * HOUR_PX + 1) + 'px;height:' + h + 'px;' + (x.n > 1 ? 'right:' + (x.col / x.n * 100) + '%;left:auto;width:calc(' + 100 / x.n + '% - 3px)' : '') + '"><div class="rt-top">' + cbox(x.it, true) + '<button data-action="edit" data-id="' + x.it.id + '" style="min-width:0;overflow:hidden;display:flex"><span>' + ttl(x.it) + '</span></button></div>' + (h >= 40 ? '<small>' + rangeLabel(x.it) + '</small>' : '') + '</div>'; }).join('');
   const hasRT = ranged.length > 0;
   const nowM = new Date().getHours() * 60 + new Date().getMinutes();
   V.innerHTML = '<header class="hdr"><div><div class="sub">יום ' + DAYS[d.getDay()] + (ds === T ? ' · היום' : '') + '</div><h1>' + d.getDate() + ' ב' + MONTHS[d.getMonth()] + '</h1></div><div class="hdr-actions">' + navBtns() + '</div></header>' +
     '<div class="strip">' + strip + '</div>' +
     (tk.length ? '<div class="prog"><span>' + nDone + ' מתוך ' + tk.length + ' משימות בוצעו</span><div class="bar"><i style="width:' + Math.round(nDone / tk.length * 100) + '%"></i></div></div>' : '<div style="height:8px;flex:none"></div>') +
     chipsRow() +
-    (allDay.length ? '<div class="allday">' + allDay.map((it) => { const p = pal(cat(it.cat)); return '<button data-action="edit" data-id="' + it.id + '" style="background:' + p[1] + ';color:' + p[0] + '">כל היום · ' + esc(it.title) + '</button>'; }).join('') + '</div>' : '') +
+    (allDay.length ? '<div class="allday">' + allDay.map((it) => { const p = pal(cat(it.cat)); return '<button data-action="edit" data-id="' + it.id + '" style="background:' + p[1] + ';color:' + p[0] + '">כל היום · ' + ttl(it) + '</button>'; }).join('') + '</div>' : '') +
     '<div class="lanes"><span style="width:44px"></span><span style="flex:1">לו״ז</span>' + (hasRT ? '<span style="width:38%">משימות בטווח שעות</span>' : '') + '</div>' +
     '<div class="tl" id="tl"><div class="tl-in" data-action="tl-add" style="height:' + (24 * HOUR_PX + 8) + 'px">' + hours +
     '<div class="ev-area" style="left:' + (hasRT ? 'calc(38% + 6px)' : '0') + '">' + evHtml + '</div>' +
@@ -474,14 +519,15 @@ function taskRow(it, mode) {
   if (it.rem != null) parts.push('תזכורת');
   return '<div class="trow' + (it.done ? ' done' : '') + '">' + cbox(it) +
     '<span style="flex:none">' + icon(c ? c.icon : 'me', p[0], 17) + '</span>' +
-    '<button class="tt" data-action="edit" data-id="' + it.id + '"><span>' + esc(it.title) + '</span><small class="' + (late ? 'late' : '') + '">' + esc(parts.join(' · ') || (c ? c.name : '')) + '</small></button>' +
+    '<button class="tt" data-action="edit" data-id="' + it.id + '"><span>' + ttl(it) + '</span><small class="' + (late ? 'late' : '') + '">' + esc(parts.join(' · ') || (c ? c.name : '')) + '</small></button>' +
     (mode === 'day' ? '' : '<button class="del" data-action="del" data-id="' + it.id + '" aria-label="מחק משימה">' + TRASH + '</button>') + '</div>';
 }
 
 /* ---------- tasks ---------- */
 function renderTasks(V) {
   const T = today();
-  let tasks = DB.items.filter((i) => i.type === 'task' && visible(i, false));
+  let tasks = [];
+  DB.items.filter((i) => i.type === 'task' && visible(i, false)).forEach((i) => { if (i.rep) { const d = nextOcc(i, T); if (d) tasks.push(occ(i, d)); } else tasks.push(i); });
   if (!UI.showOldDone) tasks = tasks.filter((t) => !(t.done && t.date && t.date < T));
   const byDate = (a, b) => (a.done - b.done) || ((a.date || '9999') < (b.date || '9999') ? -1 : (a.date || '9999') > (b.date || '9999') ? 1 : 0) || ((tmin(a.start) ?? 9999) - (tmin(b.start) ?? 9999));
   tasks.sort(byDate);
@@ -531,7 +577,7 @@ function renderCats(V) {
     (standalone ? '' : '<div class="shead"><h2>התקנה באייפון</h2></div><div class="card"><div class="info">ב־Safari: לחץ על <b>שיתוף</b> ← <b>הוסף למסך הבית</b>. מאותו רגע היומן ייפתח כאפליקציה במסך מלא, גם בלי אינטרנט.</div></div>') +
     '<div class="shead"><h2>גיבוי ושחזור</h2></div><div class="card"><div class="info">הנתונים נשמרים <b>רק על המכשיר הזה</b>. כדאי לגבות מדי פעם — הקובץ נשמר ב־Files או נשלח לעצמך.</div><div class="brow"><button class="btn ghost" data-action="export">ייצוא גיבוי</button><button class="btn ghost" data-action="import">שחזור מגיבוי</button></div></div>' +
     '<div class="shead"><h2>תזכורות</h2></div><div class="card"><div class="info">כשמגדירים תזכורת, הפריט נשלח ללוח השנה של האייפון עם התראה — כך היא תגיע גם כשהיומן סגור. אחרי שינוי שעה בפריט, יש למחוק את האירוע הישן מלוח השנה של האייפון.</div></div>' +
-    '<div class="emptybox" style="font-size:12px;padding:16px 0 4px">היומן שלי · גרסה 1.0</div></div></div>';
+    '<div class="emptybox" style="font-size:12px;padding:16px 0 4px">היומן שלי · גרסה 1.1</div></div></div>';
 }
 
 /* ---------- tab bar ---------- */
@@ -555,20 +601,39 @@ function render() {
 /* ---------- item sheet ---------- */
 let F = null, CF = null, CF_RETURN = null, DEL_ARM = null;
 function openSheet(html) { $('#sheet').innerHTML = html; $('#backdrop').classList.add('open'); }
-function closeSheet() { $('#backdrop').classList.remove('open'); $('#sheet').innerHTML = ''; F = null; CF = null; DEL_ARM = null; }
+function closeSheet() { $('#backdrop').classList.remove('open'); $('#sheet').innerHTML = ''; F = null; CF = null; DEL_ARM = null; SCOPE = null; }
 function nextHour() { const n = new Date(); return Math.min(22, n.getHours() + 1); }
 function newItem(type, preset = {}) {
   const date = preset.date !== undefined ? preset.date : (UI.view === 'tasks' ? today() : UI.date);
   let start = null, end = null;
   if (type === 'event') { const h = preset.hour ?? (date === today() ? nextHour() : 9); start = pad(h) + ':00'; end = pad(Math.min(23, h + 1)) + ':00'; }
   const def = type === 'task' ? (cat(DB.lastTaskCat) || catsOf('task')[0]) : (UI.chips.map(cat).find((c) => c && c.type === 'event') || catsOf('event')[0]);
-  F = { id: null, type, title: '', date, start, end, cat: def ? def.id : null, done: false, rem: null, notes: '', _orig: null };
+  F = { id: null, type, title: '', date, start, end, cat: def ? def.id : null, done: false, rem: null, notes: '', rep: null, until: null, _orig: null, _occ: null };
   sheetItem();
 }
-function editItem(id) {
-  const it = DB.items.find((i) => i.id === id); if (!it) return;
-  F = Object.assign({}, it, { _orig: JSON.stringify([it.date, it.start, it.end, it.rem, it.title]) });
+function editItem(idStr) {
+  const [bid, od] = splitId(idStr);
+  const it = DB.items.find((i) => i.id === bid); if (!it) return;
+  F = Object.assign({ rep: null, until: null }, it, { _occ: null });
+  if (od && it.rep) { F.date = od; F._occ = od; F.done = (it.doneDates || []).includes(od); }
+  F._orig = sig(F);
   sheetItem();
+}
+function roundT(t) { let m = tmin(t || '09:00'); m = Math.round(m / 5) * 5; if (m >= 24 * 60) m = 24 * 60 - 5; return [Math.floor(m / 60), m % 60]; }
+function timeSel(key, val) {
+  const [h, m] = roundT(val);
+  let hs = '', ms = '';
+  for (let i = 0; i < 24; i++) hs += '<option value="' + pad(i) + '"' + (i === h ? ' selected' : '') + '>' + pad(i) + '</option>';
+  for (let i = 0; i < 60; i += 5) ms += '<option value="' + pad(i) + '"' + (i === m ? ' selected' : '') + '>' + pad(i) + '</option>';
+  return '<div class="tsel"><select class="inp" data-tf="' + key + '-h" aria-label="' + (key === 'start' ? 'שעת התחלה' : 'שעת סיום') + '">' + hs + '</select><span>:</span><select class="inp" data-tf="' + key + '-m" aria-label="דקות">' + ms + '</select></div>';
+}
+function repField() {
+  const can = !!F.date;
+  return '<div class="field"><span class="lbl">חזרה' + (can ? '' : ' (דורשת תאריך)') + '</span><div class="opts">' +
+    REPS.map((r) => '<button class="opt' + ((F.rep || null) === r[0] ? ' on' : '') + '" data-action="f-rep" data-v="' + (r[0] || '') + '"' + (can || !r[0] ? '' : ' disabled') + '>' + r[1] + '</button>').join('') + '</div>' +
+    (F.rep ? '<div class="row" style="margin-top:6px"><div class="seg" style="height:46px"><button data-action="f-until" data-v="" class="' + (F.until ? '' : 'on') + '">לתמיד</button><button data-action="f-until" data-v="1" class="' + (F.until ? 'on' : '') + '">עד תאריך</button></div>' +
+      (F.until ? '<input class="inp" type="date" data-f="until" aria-label="תאריך סיום החזרה" value="' + F.until + '" min="' + F.date + '">' : '') + '</div><div class="hint">' + esc(repSummary(F)) + '</div>' : '') +
+    (F._occ ? '<div class="hint">זהו מופע של פריט חוזר. בשמירה תופיע שאלה אם לשנות רק אותו או את כל הסדרה.</div>' : '') + '</div>';
 }
 function sheetItem() {
   const isTask = F.type === 'task', editing = !!F.id;
@@ -582,7 +647,8 @@ function sheetItem() {
     (F.date ? '<input id="f-date" class="inp" type="date" data-f="date" value="' + F.date + '">' : '<button class="swrow" data-action="f-setdate" style="color:var(--muted)">ללא תאריך · הוסף</button>') + '</div>' +
     '<div class="field"><span class="lbl">' + (isTask ? 'בטווח שעות' : 'כל היום') + '</span><button class="swrow" role="switch" aria-checked="' + (isTask ? timed : !timed) + '" data-action="f-timed">' + (isTask ? (timed ? 'כן' : 'לא') : (!timed ? 'כן' : 'לא')) + '<span class="sw' + ((isTask ? timed : !timed) ? ' on' : '') + '"><i></i></span></button></div></div>' +
     (isTask && F.date ? '<button class="link" data-action="f-nodate" style="margin-top:-8px;align-self:flex-start">משימה ללא תאריך</button>' : '') +
-    (timed ? '<div class="row" style="gap:8px"><label class="lbl" for="f-start" style="flex:none">מ־</label><input id="f-start" class="inp" type="time" data-f="start" value="' + F.start + '"><label class="lbl" for="f-end" style="flex:none">עד</label><input id="f-end" class="inp" type="time" data-f="end" value="' + (F.end || '') + '"></div>' : '') +
+    (timed ? '<div class="row" style="gap:8px"><span class="lbl" style="flex:none">מ־</span>' + timeSel('start', F.start) + '<span class="lbl" style="flex:none">עד</span>' + timeSel('end', F.end || mtime(Math.min(tmin(F.start) + 60, 23 * 60 + 55))) + '</div>' : '') +
+    repField() +
     '<div class="field"><span class="lbl">' + (isTask ? 'קטגוריית משימה' : 'קטגוריית לו״ז') + '</span><div class="opts">' +
     cats.map((c) => { const p = pal(c); return '<button class="opt' + (F.cat === c.id ? ' on' : '') + '" style="--c:' + p[0] + ';--cb:' + p[1] + '" data-action="f-cat" data-id="' + c.id + '">' + icon(c.icon, p[0], 16) + esc(c.name) + '</button>'; }).join('') +
     '<button class="opt add" data-action="f-newcat">+ חדשה</button></div></div>' +
@@ -591,36 +657,80 @@ function sheetItem() {
     (F.rem != null ? '<div class="note" style="margin-top:4px">' + BELL + '<span>בשמירה ייפתח חלון "הוספה ללוח השנה" של האייפון — אשר אותו, וההתראה תגיע גם כשהיומן סגור.' + (!F.start ? ' בלי שעה, התזכורת תהיה ב־09:00.' : '') + '</span></div>' : '') + '</div>' +
     '<div class="field"><label class="lbl" for="f-notes">הערות</label><textarea id="f-notes" class="inp" data-f="notes" placeholder="אופציונלי">' + esc(F.notes) + '</textarea></div>' +
     '<button class="btn" data-action="f-save">שמירה</button>' +
-    (editing && F.rem != null && F.date ? '<button class="btn ghost" data-action="f-ics">שליחה שוב ללוח השנה של האייפון</button>' : '') +
+    (editing && F.rem != null && F.date ? '<button class="btn ghost" data-action="f-ics">' + (F._occ ? 'שליחת הסדרה שוב ללוח השנה של האייפון' : 'שליחה שוב ללוח השנה של האייפון') + '</button>' : '') +
     (editing ? '<button class="btn danger" data-action="f-del">מחיקה</button>' : ''));
   if (!editing) setTimeout(() => { const t = $('#f-title'); if (t && !F.title) t.focus(); }, 250);
 }
 function readForm() {
   document.querySelectorAll('#sheet [data-f]').forEach((el) => { F[el.dataset.f] = el.value; });
+  ['start', 'end'].forEach((k) => { const h = document.querySelector('#sheet [data-tf="' + k + '-h"]'), m = document.querySelector('#sheet [data-tf="' + k + '-m"]'); if (h && m) F[k] = h.value + ':' + m.value; });
 }
 function saveItem() {
   readForm();
   const title = (F.title || '').trim();
   if (!title) { toast('צריך לכתוב כותרת'); const t = $('#f-title'); if (t) t.focus(); return; }
   if (F.date === '') F.date = null;
+  if (F.until === '') F.until = null;
   if (F.start === '') F.start = null;
   if (F.start) {
-    if (!F.end) F.end = mtime(Math.min(tmin(F.start) + 60, 23 * 60 + 59));
-    if (tmin(F.end) <= tmin(F.start)) F.end = mtime(Math.min(tmin(F.start) + 60, 23 * 60 + 59));
+    if (!F.end || tmin(F.end) <= tmin(F.start)) F.end = mtime(Math.min(tmin(F.start) + 60, 23 * 60 + 55));
   } else F.end = null;
   if (F.type === 'event' && !F.date) F.date = UI.date;
-  if (!F.date) F.rem = null;
+  if (!F.date) { F.rem = null; F.rep = null; }
+  if (!F.rep) F.until = null;
+  if (F.rep && F.until && F.until < F.date) { toast('תאריך הסיום מוקדם מתאריך ההתחלה'); return; }
+  const fields = { type: F.type, title, date: F.date, start: F.start, end: F.end, cat: F.cat, rem: F.rem, notes: (F.notes || '').trim(), rep: F.rep || null, until: F.until || null };
   const isNew = !F.id;
-  const item = { id: F.id || uid(), type: F.type, title, date: F.date, start: F.start, end: F.end, cat: F.cat, done: !!F.done, rem: F.rem, notes: (F.notes || '').trim() };
-  const changed = isNew || F._orig !== JSON.stringify([item.date, item.start, item.end, item.rem, item.title]);
-  if (isNew) DB.items.push(item); else { const i = DB.items.findIndex((x) => x.id === item.id); if (i >= 0) DB.items[i] = item; else DB.items.push(item); }
+  const changed = isNew || F._orig !== sig(fields);
+  if (!isNew && F._occ) { openScope('save', F.id, F._occ, fields, changed); return; }
+  let item = isNew ? null : DB.items.find((x) => x.id === F.id);
+  if (!item) { item = Object.assign({ id: F.id || uid(), done: false, ex: [], doneDates: [] }, fields); DB.items.push(item); }
+  else Object.assign(item, fields);
+  finishSave(item, isNew, changed);
+}
+function finishSave(item, isNew, changed) {
   if (item.type === 'task' && item.cat) DB.lastTaskCat = item.cat;
   save();
   if (item.rem != null && item.date && changed) openICS(item);
   closeSheet();
-  if (item.date && UI.view !== 'tasks') UI.date = item.date;
+  if (item.date && UI.view !== 'tasks' && !item.rep) UI.date = item.date;
   render();
   toast(isNew ? 'נוסף' : 'נשמר');
+}
+
+/* ---------- recurring scope (this occurrence / whole series) ---------- */
+let SCOPE = null;
+function openScope(mode, bid, od, fields, changed) {
+  SCOPE = { mode, bid, od, fields, changed };
+  openSheet('<div class="handle"></div><div class="sh-top"><h2>' + (mode === 'del' ? 'מחיקת פריט חוזר' : 'שמירת פריט חוזר') + '</h2><button class="icon-btn" data-action="scope-cancel" aria-label="ביטול">' + CLOSE + '</button></div>' +
+    '<div style="font-size:15px;color:var(--muted)">' + (mode === 'del' ? 'מה למחוק?' : 'על מה להחיל את השינוי?') + '</div>' +
+    '<button class="btn" data-action="scope" data-v="one">רק המופע הזה · ' + dshort(od) + '</button>' +
+    '<button class="btn ghost" data-action="scope" data-v="all">כל הסדרה</button>' +
+    '<button class="btn danger" data-action="scope-cancel" style="color:var(--muted)">ביטול</button>');
+}
+function applyScope(v) {
+  const S = SCOPE; SCOPE = null; if (!S) return;
+  const base = DB.items.find((i) => i.id === S.bid); if (!base) { closeSheet(); return; }
+  if (S.mode === 'del') {
+    closeSheet();
+    removeWithUndo(() => {
+      if (v === 'one') base.ex = (base.ex || []).concat(S.od);
+      else DB.items = DB.items.filter((x) => x.id !== S.bid);
+    }, v === 'one' ? 'המופע נמחק' : 'הסדרה נמחקה');
+    return;
+  }
+  const f = S.fields, occDone = (base.doneDates || []).includes(S.od);
+  let out;
+  if (v === 'one') {
+    base.ex = (base.ex || []).concat(S.od);
+    out = Object.assign({}, f, { id: uid(), rep: null, until: null, ex: [], doneDates: [], done: occDone });
+    DB.items.push(out);
+  } else {
+    const newDate = (!f.rep || f.date !== S.od) ? f.date : base.date;
+    Object.assign(base, f, { date: newDate, ex: base.ex || [], doneDates: base.doneDates || [], done: f.rep ? false : occDone });
+    out = base;
+  }
+  finishSave(out, false, S.changed);
 }
 
 /* ---------- category sheet ---------- */
@@ -680,6 +790,13 @@ function icsFor(it) {
     L.push('DTSTART;VALUE=DATE:' + d, 'DTEND;VALUE=DATE:' + addDays(it.date, 1).replace(/-/g, ''));
   } else {
     L.push('DTSTART:' + d + 'T090000', 'DTEND:' + d + 'T091500');
+  }
+  if (it.rep) {
+    let r = 'RRULE:FREQ=' + { day: 'DAILY', week: 'WEEKLY', month: 'MONTHLY', year: 'YEARLY' }[it.rep];
+    if (it.rep === 'month' && parse(it.date).getDate() === 31) r += ';BYMONTHDAY=-1';
+    if (it.until) r += ';UNTIL=' + it.until.replace(/-/g, '') + (allDay ? '' : 'T235959');
+    L.push(r);
+    (it.ex || []).forEach((x) => L.push(allDay ? 'EXDATE;VALUE=DATE:' + x.replace(/-/g, '') : 'EXDATE:' + x.replace(/-/g, '') + 'T' + (it.start ? it.start.replace(':', '') + '00' : '090000')));
   }
   L.push('SUMMARY:' + icsEsc((it.type === 'task' ? 'משימה: ' : '') + it.title));
   L.push('DESCRIPTION:' + icsEsc((c ? c.name : '') + (it.notes ? ' — ' + it.notes : '')));
@@ -754,10 +871,11 @@ const ACT = {
   chip: (el) => { const id = el.dataset.id; UI.chips = UI.chips.includes(id) ? UI.chips.filter((x) => x !== id) : UI.chips.concat(id); render(); },
   edit: (el) => editItem(el.dataset.id),
   toggle: (el) => {
-    const it = DB.items.find((i) => i.id === el.dataset.id); if (!it) return;
-    it.done = !it.done; save();
-    if (F && F.id === it.id) F.done = it.done;
-    render();
+    const [bid, od] = splitId(el.dataset.id);
+    const it = DB.items.find((i) => i.id === bid); if (!it) return;
+    if (od && it.rep) { const dd = it.doneDates || (it.doneDates = []); const k = dd.indexOf(od); if (k >= 0) dd.splice(k, 1); else dd.push(od); }
+    else it.done = !it.done;
+    save(); render();
   },
   add: () => newItem(UI.view === 'tasks' ? 'task' : 'event'),
   'add-task': () => newItem('task', { date: UI.date }),
@@ -766,9 +884,10 @@ const ACT = {
     newItem('event', { date: UI.date, hour: h });
   },
   del: (el) => {
-    const i = DB.items.findIndex((x) => x.id === el.dataset.id); if (i < 0) return;
-    const [it] = DB.items.splice(i, 1); save(); render();
-    toast('"' + it.title + '" נמחקה', 'ביטול', () => { DB.items.splice(i, 0, it); save(); render(); });
+    const [bid, od] = splitId(el.dataset.id);
+    const it = DB.items.find((i) => i.id === bid); if (!it) return;
+    if (it.rep && od) { openScope('del', bid, od); return; }
+    removeWithUndo(() => { DB.items = DB.items.filter((x) => x.id !== bid); }, '"' + it.title + '" נמחקה');
   },
   'task-mode': (el) => { UI.taskMode = el.dataset.v; render(); },
   'old-done': () => { UI.showOldDone = !UI.showOldDone; render(); },
@@ -798,20 +917,23 @@ const ACT = {
     if (F.start) { F.start = null; F.end = null; } else { const h = F.date === today() ? nextHour() : 9; F.start = pad(h) + ':00'; F.end = pad(Math.min(23, h + 1)) + ':00'; }
     sheetItem();
   },
-  'f-nodate': () => { readForm(); F.date = null; F.rem = null; sheetItem(); },
+  'f-nodate': () => { readForm(); F.date = null; F.rem = null; F.rep = null; F.until = null; sheetItem(); },
   'f-setdate': () => { readForm(); F.date = UI.view === 'tasks' ? today() : UI.date; sheetItem(); },
   'f-cat': (el) => { readForm(); F.cat = el.dataset.id; sheetItem(); },
   'f-newcat': () => { readForm(); openCat(null, F.type, F); },
   'f-rem': (el) => { readForm(); F.rem = el.dataset.v === '' ? null : Number(el.dataset.v); sheetItem(); },
   'f-save': () => saveItem(),
-  'f-ics': () => { readForm(); openICS(Object.assign({}, F, { id: F.id })); },
+  'f-ics': () => { readForm(); const b = F._occ ? findItem(F.id) : Object.assign({}, F); if (b) openICS(b); },
   'f-del': () => {
+    if (F._occ) { readForm(); openScope('del', F.id, F._occ); return; }
     if (DEL_ARM !== F.id) { DEL_ARM = F.id; readForm(); sheetItem(); const b = document.querySelector('[data-action="f-del"]'); if (b) b.textContent = 'לחץ שוב לאישור המחיקה'; return; }
-    const i = DB.items.findIndex((x) => x.id === F.id); const it = DB.items[i];
-    if (i >= 0) DB.items.splice(i, 1);
-    save(); closeSheet(); render();
-    if (it) toast('נמחק', 'ביטול', () => { DB.items.splice(i, 0, it); save(); render(); });
+    const id = F.id; closeSheet();
+    removeWithUndo(() => { DB.items = DB.items.filter((x) => x.id !== id); }, 'נמחק');
   },
+  'f-rep': (el) => { readForm(); F.rep = el.dataset.v || null; if (!F.rep) F.until = null; sheetItem(); },
+  'f-until': (el) => { readForm(); F.until = el.dataset.v ? (F.until || addDays(F.date, 30)) : null; sheetItem(); },
+  scope: (el) => applyScope(el.dataset.v),
+  'scope-cancel': () => { const had = SCOPE; SCOPE = null; if (had && F) sheetItem(); else closeSheet(); },
   'c-color': (el) => { readCat(); CF.color = Number(el.dataset.v); sheetCat(); },
   'c-icon': (el) => { readCat(); CF.icon = el.dataset.v; sheetCat(); },
   'c-save': () => saveCat(),
@@ -829,6 +951,18 @@ document.addEventListener('submit', (e) => {
   const c = cat(DB.lastTaskCat) || catsOf('task')[0];
   DB.items.push({ id: uid(), type: 'task', title: t, date: today(), start: null, end: null, cat: c ? c.id : null, done: false, rem: null, notes: '' });
   save(); render(); const q = $('#quick'); if (q) q.focus(); toast('נוספה משימה להיום');
+});
+document.addEventListener('change', (e) => {
+  const t0 = e.target; if (F && t0.dataset && t0.dataset.tf && t0.dataset.tf.indexOf('end') === 0) { readForm(); return; }
+  const t = e.target; if (!F || !t.dataset || !t.dataset.tf || t.dataset.tf.indexOf('start') !== 0) return;
+  const ps = tmin(F.start), pe = tmin(F.end);
+  const dur = ps != null && pe != null && pe > ps ? pe - ps : 60;
+  readForm();
+  {
+    const [h, m] = roundT(mtime(Math.min(tmin(F.start) + dur, 23 * 60 + 55)));
+    const eh = $('#sheet [data-tf="end-h"]'), em = $('#sheet [data-tf="end-m"]');
+    if (eh && em) { eh.value = pad(h); em.value = pad(m); F.end = eh.value + ':' + em.value; }
+  }
 });
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && $('#backdrop').classList.contains('open')) closeSheet(); });
 
