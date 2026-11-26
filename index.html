@@ -212,6 +212,9 @@ input::-webkit-date-and-time-value{text-align:right}
 .tsel{display:flex;align-items:center;gap:4px;direction:ltr}
 .tsel select{flex:1;text-align:center;text-align-last:center;padding:0 6px;font-variant-numeric:tabular-nums}
 .tsel span{font-weight:700;color:var(--muted)}
+.daypick{display:flex;gap:5px;flex-wrap:wrap;align-items:center;margin-top:8px}
+.dp{width:36px;height:36px;border-radius:18px;border:1px solid #E2D9C7;background:var(--card);font-size:14px;text-align:center}
+.dp.on{background:var(--accent);border-color:var(--accent);font-weight:800}
 .hint{font-size:12px;line-height:17px;color:var(--muted);margin-top:2px}
 #toast{position:fixed;bottom:calc(env(safe-area-inset-bottom) + 86px);left:50%;transform:translate(-50%,20px);background:var(--ink);color:#fff;border-radius:12px;padding:10px 16px;font-size:14px;display:flex;gap:16px;align-items:center;opacity:0;pointer-events:none;transition:opacity .2s,transform .2s;z-index:60;max-width:90%;white-space:nowrap}
 #toast.show{opacity:1;transform:translate(-50%,0);pointer-events:auto}
@@ -361,7 +364,7 @@ function occursOn(it, ds) {
   if (it.ex && it.ex.includes(ds)) return false;
   const d = parse(ds), b = parse(it.date);
   if (it.rep === 'day') return true;
-  if (it.rep === 'week') return d.getDay() === b.getDay();
+  if (it.rep === 'week') return (it.days && it.days.length ? it.days : [b.getDay()]).includes(d.getDay());
   if (it.rep === 'month') return d.getDate() === Math.min(b.getDate(), dimOf(d.getFullYear(), d.getMonth()));
   if (it.rep === 'year') return d.getMonth() === b.getMonth() && d.getDate() === Math.min(b.getDate(), dimOf(d.getFullYear(), d.getMonth()));
   return false;
@@ -379,12 +382,13 @@ function nextOcc(it, from) {
   }
   return null;
 }
-const sig = (o) => JSON.stringify([o.date, o.start, o.end, o.rem, o.title, o.rep || null, o.until || null]);
+const sig = (o) => JSON.stringify([o.date, o.start, o.end, o.rem, o.title, o.rep || null, o.until || null, o.rep === 'week' ? (o.days || []).slice().sort().join() : '']);
+const daysList = (arr) => arr.slice().sort((a, b) => a - b).map((x) => DS[x]).join(', ');
 const REPS = [[null, 'ללא'], ['day', 'כל יום'], ['week', 'כל שבוע'], ['month', 'כל חודש'], ['year', 'כל שנה']];
 function repSummary(f) {
   if (!f.rep || !f.date) return '';
   const d = parse(f.date);
-  const s = { day: 'כל יום', week: 'כל יום ' + DAYS[d.getDay()], month: 'כל חודש ב־' + d.getDate() + (d.getDate() > 28 ? ' (בחודש קצר: ביום האחרון)' : ''), year: 'כל שנה ב־' + d.getDate() + ' ב' + MONTHS[d.getMonth()] }[f.rep];
+  const s = { day: 'כל יום', week: (f.days && f.days.length > 1 ? 'כל שבוע בימים ' + daysList(f.days) : 'כל יום ' + DAYS[(f.days && f.days.length ? f.days[0] : d.getDay())]), month: 'כל חודש ב־' + d.getDate() + (d.getDate() > 28 ? ' (בחודש קצר: ביום האחרון)' : ''), year: 'כל שנה ב־' + d.getDate() + ' ב' + MONTHS[d.getMonth()] }[f.rep];
   return s + (f.until ? ', עד ' + dshort(f.until) + ' (כולל)' : ', ללא תאריך סיום');
 }
 function removeWithUndo(fn, msg) {
@@ -577,7 +581,7 @@ function renderCats(V) {
     (standalone ? '' : '<div class="shead"><h2>התקנה באייפון</h2></div><div class="card"><div class="info">ב־Safari: לחץ על <b>שיתוף</b> ← <b>הוסף למסך הבית</b>. מאותו רגע היומן ייפתח כאפליקציה במסך מלא, גם בלי אינטרנט.</div></div>') +
     '<div class="shead"><h2>גיבוי ושחזור</h2></div><div class="card"><div class="info">הנתונים נשמרים <b>רק על המכשיר הזה</b>. כדאי לגבות מדי פעם — הקובץ נשמר ב־Files או נשלח לעצמך.</div><div class="brow"><button class="btn ghost" data-action="export">ייצוא גיבוי</button><button class="btn ghost" data-action="import">שחזור מגיבוי</button></div></div>' +
     '<div class="shead"><h2>תזכורות</h2></div><div class="card"><div class="info">כשמגדירים תזכורת, הפריט נשלח ללוח השנה של האייפון עם התראה — כך היא תגיע גם כשהיומן סגור. אחרי שינוי שעה בפריט, יש למחוק את האירוע הישן מלוח השנה של האייפון.</div></div>' +
-    '<div class="emptybox" style="font-size:12px;padding:16px 0 4px">היומן שלי · גרסה 1.1</div></div></div>';
+    '<div class="emptybox" style="font-size:12px;padding:16px 0 4px">היומן שלי · גרסה 1.2</div></div></div>';
 }
 
 /* ---------- tab bar ---------- */
@@ -608,13 +612,13 @@ function newItem(type, preset = {}) {
   let start = null, end = null;
   if (type === 'event') { const h = preset.hour ?? (date === today() ? nextHour() : 9); start = pad(h) + ':00'; end = pad(Math.min(23, h + 1)) + ':00'; }
   const def = type === 'task' ? (cat(DB.lastTaskCat) || catsOf('task')[0]) : (UI.chips.map(cat).find((c) => c && c.type === 'event') || catsOf('event')[0]);
-  F = { id: null, type, title: '', date, start, end, cat: def ? def.id : null, done: false, rem: null, notes: '', rep: null, until: null, _orig: null, _occ: null };
+  F = { id: null, type, title: '', date, start, end, cat: def ? def.id : null, done: false, rem: null, notes: '', rep: null, until: null, days: null, _orig: null, _occ: null };
   sheetItem();
 }
 function editItem(idStr) {
   const [bid, od] = splitId(idStr);
   const it = DB.items.find((i) => i.id === bid); if (!it) return;
-  F = Object.assign({ rep: null, until: null }, it, { _occ: null });
+  F = Object.assign({ rep: null, until: null, days: null }, it, { _occ: null, days: it.days ? it.days.slice() : (it.rep === 'week' && it.date ? [parse(it.date).getDay()] : null) });
   if (od && it.rep) { F.date = od; F._occ = od; F.done = (it.doneDates || []).includes(od); }
   F._orig = sig(F);
   sheetItem();
@@ -631,6 +635,8 @@ function repField() {
   const can = !!F.date;
   return '<div class="field"><span class="lbl">חזרה' + (can ? '' : ' (דורשת תאריך)') + '</span><div class="opts">' +
     REPS.map((r) => '<button class="opt' + ((F.rep || null) === r[0] ? ' on' : '') + '" data-action="f-rep" data-v="' + (r[0] || '') + '"' + (can || !r[0] ? '' : ' disabled') + '>' + r[1] + '</button>').join('') + '</div>' +
+    (F.rep === 'week' ? '<div class="daypick" role="group" aria-label="ימים בשבוע">' + DS.map((x, i) => '<button class="dp' + ((F.days || []).includes(i) ? ' on' : '') + '" data-action="f-day" data-v="' + i + '" aria-pressed="' + (F.days || []).includes(i) + '" aria-label="' + DAYS[i] + '">' + x + '</button>').join('') +
+      '<button class="opt" data-action="f-days-preset" style="height:36px;font-size:13px;padding:0 9px">א׳–ה׳</button></div>' : '') +
     (F.rep ? '<div class="row" style="margin-top:6px"><div class="seg" style="height:46px"><button data-action="f-until" data-v="" class="' + (F.until ? '' : 'on') + '">לתמיד</button><button data-action="f-until" data-v="1" class="' + (F.until ? 'on' : '') + '">עד תאריך</button></div>' +
       (F.until ? '<input class="inp" type="date" data-f="until" aria-label="תאריך סיום החזרה" value="' + F.until + '" min="' + F.date + '">' : '') + '</div><div class="hint">' + esc(repSummary(F)) + '</div>' : '') +
     (F._occ ? '<div class="hint">זהו מופע של פריט חוזר. בשמירה תופיע שאלה אם לשנות רק אותו או את כל הסדרה.</div>' : '') + '</div>';
@@ -679,7 +685,7 @@ function saveItem() {
   if (!F.date) { F.rem = null; F.rep = null; }
   if (!F.rep) F.until = null;
   if (F.rep && F.until && F.until < F.date) { toast('תאריך הסיום מוקדם מתאריך ההתחלה'); return; }
-  const fields = { type: F.type, title, date: F.date, start: F.start, end: F.end, cat: F.cat, rem: F.rem, notes: (F.notes || '').trim(), rep: F.rep || null, until: F.until || null };
+  const fields = { type: F.type, title, date: F.date, start: F.start, end: F.end, cat: F.cat, rem: F.rem, notes: (F.notes || '').trim(), rep: F.rep || null, until: F.until || null, days: F.rep === 'week' ? ((F.days && F.days.length ? F.days : [parse(F.date).getDay()]).slice().sort((a, b) => a - b)) : null };
   const isNew = !F.id;
   const changed = isNew || F._orig !== sig(fields);
   if (!isNew && F._occ) { openScope('save', F.id, F._occ, fields, changed); return; }
@@ -723,7 +729,7 @@ function applyScope(v) {
   let out;
   if (v === 'one') {
     base.ex = (base.ex || []).concat(S.od);
-    out = Object.assign({}, f, { id: uid(), rep: null, until: null, ex: [], doneDates: [], done: occDone });
+    out = Object.assign({}, f, { id: uid(), rep: null, until: null, days: null, ex: [], doneDates: [], done: occDone });
     DB.items.push(out);
   } else {
     const newDate = (!f.rep || f.date !== S.od) ? f.date : base.date;
@@ -778,7 +784,9 @@ function delCat() {
 /* ---------- reminders (.ics) ---------- */
 function icsEsc(s) { return String(s || '').replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,').replace(/\r?\n/g, '\\n'); }
 function icsFor(it) {
-  const d = it.date.replace(/-/g, ''), c = cat(it.cat);
+  let sd = it.date;
+  if (it.rep === 'week' && it.days && it.days.length) { for (let k = 0; k < 7 && !it.days.includes(parse(sd).getDay()); k++) sd = addDays(sd, 1); }
+  const d = sd.replace(/-/g, ''), c = cat(it.cat);
   const now = new Date(); const stamp = now.getUTCFullYear() + pad(now.getUTCMonth() + 1) + pad(now.getUTCDate()) + 'T' + pad(now.getUTCHours()) + pad(now.getUTCMinutes()) + pad(now.getUTCSeconds()) + 'Z';
   const L = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//HaYoman Sheli//HE', 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH', 'BEGIN:VEVENT', 'UID:' + it.id + '@hayoman', 'DTSTAMP:' + stamp];
   let allDay = false;
@@ -787,13 +795,14 @@ function icsFor(it) {
     L.push('DTEND:' + d + 'T' + (it.end || mtime(tmin(it.start) + 60)).replace(':', '') + '00');
   } else if (it.type === 'event') {
     allDay = true;
-    L.push('DTSTART;VALUE=DATE:' + d, 'DTEND;VALUE=DATE:' + addDays(it.date, 1).replace(/-/g, ''));
+    L.push('DTSTART;VALUE=DATE:' + d, 'DTEND;VALUE=DATE:' + addDays(sd, 1).replace(/-/g, ''));
   } else {
     L.push('DTSTART:' + d + 'T090000', 'DTEND:' + d + 'T091500');
   }
   if (it.rep) {
     let r = 'RRULE:FREQ=' + { day: 'DAILY', week: 'WEEKLY', month: 'MONTHLY', year: 'YEARLY' }[it.rep];
     if (it.rep === 'month' && parse(it.date).getDate() === 31) r += ';BYMONTHDAY=-1';
+    if (it.rep === 'week' && it.days && it.days.length) r += ';BYDAY=' + it.days.slice().sort((a, b) => a - b).map((x) => ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'][x]).join(',');
     if (it.until) r += ';UNTIL=' + it.until.replace(/-/g, '') + (allDay ? '' : 'T235959');
     L.push(r);
     (it.ex || []).forEach((x) => L.push(allDay ? 'EXDATE;VALUE=DATE:' + x.replace(/-/g, '') : 'EXDATE:' + x.replace(/-/g, '') + 'T' + (it.start ? it.start.replace(':', '') + '00' : '090000')));
@@ -930,7 +939,9 @@ const ACT = {
     const id = F.id; closeSheet();
     removeWithUndo(() => { DB.items = DB.items.filter((x) => x.id !== id); }, 'נמחק');
   },
-  'f-rep': (el) => { readForm(); F.rep = el.dataset.v || null; if (!F.rep) F.until = null; sheetItem(); },
+  'f-rep': (el) => { readForm(); F.rep = el.dataset.v || null; if (!F.rep) F.until = null; if (F.rep === 'week' && !(F.days && F.days.length) && F.date) F.days = [parse(F.date).getDay()]; sheetItem(); },
+  'f-day': (el) => { readForm(); const i = Number(el.dataset.v); const ds = (F.days || []).slice(); const k = ds.indexOf(i); if (k >= 0) { if (ds.length === 1) { toast('צריך לבחור לפחות יום אחד'); return; } ds.splice(k, 1); } else ds.push(i); F.days = ds; sheetItem(); },
+  'f-days-preset': () => { readForm(); F.days = [0, 1, 2, 3, 4]; sheetItem(); },
   'f-until': (el) => { readForm(); F.until = el.dataset.v ? (F.until || addDays(F.date, 30)) : null; sheetItem(); },
   scope: (el) => applyScope(el.dataset.v),
   'scope-cancel': () => { const had = SCOPE; SCOPE = null; if (had && F) sheetItem(); else closeSheet(); },
